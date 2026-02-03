@@ -78,3 +78,121 @@ scissors: cutter, splicer, shears
 teddy-bear: stuffed animal, stuffed bear, toy, sleep aid
 hair-drier: portable air device, water evaporator, air blower, hair blower
 toothbrush: teeth cleaner, cavity preventer, hygiene brush, mouth hygiene brush, plaque remove
+# ── Additional Household Items ───────────────────────────────────────────
+pillow: cushion, headrest, sleep accessory, soft support, bed pillow
+blanket: cover, bedspread, throw blanket, cozy cover, quilt
+sheet: bedsheet, bed linen, flat sheet, fitted sheet
+towel: bath towel, hand towel, drying cloth, washcloth
+soap: cleanser, washing bar, soap bar, detergent
+toothpaste: dentifrice, tooth cleaner, cavity fighter
+shampoo: hair cleanser, hair wash, hair product
+mirror: looking glass, reflective surface, bathroom mirror, wall mirror
+tissue: napkin, paper towel, facial tissue, Kleenex
+trash can: garbage bin, waste basket, trash bin, recycling bin, dumpster
+# ── Additional Electronics ───────────────────────────────────────────────
+tablet: tablet device, iPad, touchscreen tablet, e-reader, digital tablet
+headphones: earphones, headsets, audio device, wireless headphones, earbuds
+speaker: audio speaker, sound device, bluetooth speaker, portable speaker
+camera: digital camera, photo device, video camera, DSLR, mirrorless camera
+printer: printing device, laser printer, inkjet printer, office printer
+router: network router, WiFi router, wireless router, internet device
+charger: power charger, battery charger, USB charger, charging cable
+battery: AA battery, AAA battery, rechargeable battery, power cell
+# ── Additional Tools ──────────────────────────────────────────────────────
+hammer: mallet, nail driver, striking tool, claw hammer
+screwdriver: screw driver, Phillips, flathead, screwdriver set, tool
+wrench: spanner, socket wrench, adjustable wrench, pipe wrench
+pliers: cutting pliers, gripping tool, needle-nose pliers, wire cutters
+saw: hand saw, hacksaw, circular saw, wood saw, metal saw
+drill: power drill, cordless drill, drill bit, drilling tool
+level: spirit level, bubble level, leveling tool, carpenter's level
+tape measure: measuring tape, ruler, tape, carpenter's tape
+# ── Additional Food Items ─────────────────────────────────────────────────
+bread: loaf, slice, toast, bread slice, bakery item, baked bread
+milk: dairy milk, cow's milk, white milk, cold milk, pasteurized milk
+cheese: cheese wedge, dairy product, melted cheese, cheese slice
+egg: chicken egg, breakfast egg, boiled egg, fried egg
+butter: dairy butter, spreadable butter, creamery butter
+yogurt: yogurt cup, dairy yogurt, Greek yogurt, fruit yogurt
+cereal: breakfast cereal, corn flakes, oatmeal, granola
+pasta: spaghetti, noodle, pasta shape, macaroni, penne
+rice: white rice, cooked rice, grain, staple food
+chicken: poultry, chicken breast, cooked chicken, roasted chicken
+beef: steak, ground beef, beef meat, cooked beef
+fish: salmon, tuna, cod, cooked fish, fried fish
+pizza slice: pizza, pizza piece, cheese pizza, pepperoni pizza
+burger: hamburger, cheeseburger, beef burger, fast food burger
+fries: french fries, potato fries, crispy fries, fried potatoes
+ice cream: frozen dessert, gelato, scoop ice cream, soft serve
+chocolate: chocolate bar, cocoa, milk chocolate, dark chocolate
+candy: sweets, gum, lollipop, hard candy, gummy candy
+# ── Additional Clothing Items ─────────────────────────────────────────────
+shirt: t-shirt, polo shirt, dress shirt, casual shirt
+pants: trousers, jeans, shorts, slacks, long pants
+jacket: coat, windbreaker, hoodie, winter jacket, rain jacket
+dress: gown, sundress, formal dress, summer dress
+skirt: midi skirt, mini skirt, pleated skirt, long skirt
+shoes: sneakers, boots, sandals, athletic shoes, dress shoes
+hat: cap, beanie, fedora, straw hat, baseball cap
+scarf: neckwear, winter scarf, silk scarf, knitted scarf
+gloves: mittens, winter gloves, work gloves, leather gloves
+sunglasses: shades, sunnies, polarized sunglasses, aviators
+watch: wristwatch, smartwatch, timepiece, analog watch
+ring: jewelry, wedding ring, engagement ring, band
+earrings: studs, hoops, dangle earrings, jewelry
+necklace: pendant, chain, jewelry, bead necklace
+belt: waistband, leather belt, fashion belt, buckle
+# ── Additional Office/School Items ───────────────────────────────────────
+pen: ballpoint pen, ink pen, writing pen, pen
+pencil: graphite pencil, mechanical pencil, #2 pencil
+marker: sharpie, permanent marker, highlighter, marker pen
+ruler: measuring ruler, straightedge, drawing ruler
+glue: adhesive, glue stick, school glue, super glue
+scissors: office scissors, craft scissors, fabric scissors
+stapler: paper stapler, desktop stapler, heavy-duty stapler
+paperclip: clip, binder clip, paper clip
+folder: file folder, manila folder, accordion folder
+notebook: notebook, journal, composition book, spiral notebook
+sticky note: Post-it note, sticky pad, note pad
+whiteboard: dry-erase board, marker board, presentation board
+projector: video projector, data projector, presentation device
+# ── Additional Sports/Fitness Items ───────────────────────────────────────
+jump rope: skipping rope, exercise rope, cardio rope
+dumbbell: weight, kettlebell, barbell, exercise weight
+yoga mat: exercise mat, fitness mat, stretching mat
+resistance band: exercise band, stretch band, fitness band
+helmet: bike helmet, safety helmet, sports helmet, protective gear
+pads: knee pads, elbow pads, protective pads, sports pads
+goggles: swim goggles, safety goggles, protective eyewear
+balloon: party balloon, helium balloon, latex balloon
+# ── Additional Vehicles ───────────────────────────────────────────────────
+taxi: cab, yellow cab, taxi cab, hired car
+ambulance: emergency vehicle, medical vehicle, rescue vehicle
+fire truck: fire engine, emergency truck, firefighting vehicle
+police car: police vehicle, patrol car, law enforcement car
+motorcycle: motorbike, two-wheeler, motor scooter
+scooter: electric scooter, kick scooter, push scooter
+boat: sailboat, motorboat, rowboat, kayak, canoe
+airplane: jet, airplane, commercial aircraft, helicopter, drone
+# ── Additional Animals ────────────────────────────────────────────────────
+duck: waterfowl, dabbling duck, mallard, duckling
+rabbit: bunny, hare, cottontail, long-eared animal
+hamster: pet hamster, guinea pig, rodent, small pet
+guinea pig: cavy, pet rodent, small animal
+fish: aquarium fish, goldfish, tropical fish, koi
+turtle: tortoise, pet turtle, aquatic turtle, box turtle
+lizard: gecko, iguana, reptile, chameleon
+snake: serpent, python, corn snake, pet snake
+butterfly: moth, winged insect, flying insect
+bee: honeybee, bumblebee, flying insect, pollination insect
+spider: arachnid, tarantula, pet spider
+crab: crustacean, crab meat, blue crab
+lobster: seafood, shellfish, cooked lobster
+shrimp: prawn, shrimp meat, seafood
+# ── Additional Plants/Flowers ─────────────────────────────────────────────
+flower: rose, tulip, daisy, sunflower, lily, orchid
+plant: houseplant, potted plant, indoor plant, succulent
+tree: oak tree, pine tree, deciduous tree, evergreen
+bush: shrub, hedge, bush plant
+grass: lawn grass, turf, green grass
+weed: unwanted plant, wild plant, garden weed

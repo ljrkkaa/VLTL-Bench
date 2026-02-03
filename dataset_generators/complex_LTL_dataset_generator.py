@@ -1,0 +1,955 @@
+import argparse
+import json
+import random
+import re
+import string
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import yaml
+
+# ––– project‑local helpers ––––––––––––––––––––––––––––––––––––––––––––––––
+from __init__ import parse_object_names, build_actions_dict
+
+
+#
+# -------------------------#
+# 1)  Scenario loader                                                        #
+# ---------------------------------------------------------------------------#
+def load_scenario(
+    scenario_name: str, yaml_path: str = "dataset_generators/scenarios.yaml"
+) -> Tuple[Dict, Dict, Dict, List[str], Dict]:
+    """
+    Return
+        cfg            – full YAML dict
+        object_dict    – {canon -> [synonyms]}
+        actions_dict   – {verb  -> [NL synonyms]}
+        locations      – list[str]
+        actions_cfg    – cfg["actions"] (incl. 'params' lists)
+    """
+    cfg_all = yaml.safe_load(Path(yaml_path).read_text())
+    if scenario_name not in cfg_all:
+        raise ValueError(f"Scenario '{scenario_name}' not found in {yaml_path}.")
+
+    cfg = cfg_all[scenario_name]
+
+    object_dict = parse_object_names("dataset_generators/object_names.txt")
+    actions_dict = {
+        k: v for k, v in build_actions_dict().items() if k in cfg["actions"]
+    }
+
+    return cfg, object_dict, actions_dict, cfg.get("locations", []), cfg["actions"]
+
+
+# ---------------------------------------------------------------------------#
+# 2)  Simple inflection helper                                               #
+# ---------------------------------------------------------------------------#
+def _to_gerund(word: str) -> str:
+    if word.endswith("ie"):
+        return word[:-2] + "ying"
+    if word.endswith("e") and not word.endswith("ee"):
+        return word[:-1] + "ing"
+    if len(word) > 2 and re.match(r"[aeiou][^aeiouywx]$", word[-2:]):
+        return word + "ing"
+    return word + "ing"
+
+
+# ---------------------------------------------------------------------------
+# 3)  LTL skeletons & NL templates (unchanged)
+# ---------------------------------------------------------------------------
+
+LTL_TEMPLATES_STATE = [
+    ("F_NOT", 1, lambda P: ["finally", "(", "not", P[0], ")"]),
+    ("G_NOT", 1, lambda P: ["globally", "(", "not", P[0], ")"]),
+    ("F_AND", 2, lambda P: ["finally", "(", P[0], "and", P[1], ")"]),
+    ("G_AND", 2, lambda P: ["globally", "(", P[0], "and", P[1], ")"]),
+    ("F_OR", 2, lambda P: ["finally", "(", P[0], "or", P[1], ")"]),
+    ("G_OR", 2, lambda P: ["globally", "(", P[0], "or", P[1], ")"]),
+    ("X", 1, lambda P: ["next", P[0]]),
+    ("U", 2, lambda P: ["(", P[0], "until", P[1], ")"]),
+]
+
+SEMANTIC_TEMPLATES = {
+    "F_NOT": [lambda s: f"eventually, avoid {s[0]}."],
+    "G_NOT": [lambda s: f"always avoid {s[0]}."],
+    "F_AND": [lambda s: f"eventually {s[0]} and {s[1]}."],
+    "G_AND": [lambda s: f"always maintain both {s[0]} and {s[1]}."],
+    "F_OR": [lambda s: f"eventually {s[0]} or {s[1]}."],
+    "G_OR": [lambda s: f"always have either {s[0]} or {s[1]}."],
+    "NOT": [lambda s: f"never {s[0]}.", lambda s: f"avoid {s[0]} at all costs."],
+    "AND": [
+        lambda s: f"{s[0]} and {s[1]}.",
+        lambda s: f"ensure both {s[0]} and {s[1]}.",
+    ],
+    "OR": [lambda s: f"{s[0]} or {s[1]}."],
+}
+
+GENERIC_TEMPLATES = [
+    lambda s: "In this task, " + ", then ".join(s) + ".",
+    lambda s: "Please " + " and then ".join(s) + ".",
+]
+
+VERB_LIKE_STARTS = {
+    "never",
+    "avoid",
+    "always",
+    "grab",
+    "ensure",
+    "please",
+    "eventually",
+    "do",
+    "keep",
+    "ultimately",
+    "make",
+}
+EGO_REFS = ["The robot", "You", "Our agent", "The system", "This controller"]
+
+
+def _same_word(sent_tok: str, targ_tok: str) -> bool:
+    """True if the tokens match literally (case-insensitive)."""
+    s = sent_tok.rstrip(string.punctuation).lower()
+    t = targ_tok.lower()
+    return s == t
+
+
+ADDITIONAL_LTL_TEMPLATES_STATE = [
+    # 1  Every a is eventually followed by b     globally (a implies finally b)
+    ("G_IMPL_F", 2, lambda P: "globally ( {} implies finally {} )".format(*P).split()),
+    # 2  Never a and b at the same time          globally (not (a and b))
+    ("G_NOT_AND", 2, lambda P: "globally ( not ( {} and {} ) )".format(*P).split()),
+    # 3  a ⇒ b three steps later                 globally (a implies next next next b)
+    (
+        "G_IMPL_XXX",
+        2,
+        lambda P: "globally ( {} implies next ( next ( next {} ) ) )".format(
+            *P
+        ).split(),
+    ),
+    # 4  a until  globally finally b            a until (globally (finally b))
+    ("U_GF", 2, lambda P: "{} until ( globally ( finally {} ) )".format(*P).split()),
+    # 5  If finally b then …                    (finally b) implies (not b until (a and not b))
+    (
+        "F_B_IMPL_A_BEFORE",
+        2,
+        lambda P: "( finally {} ) implies ( not {} until ( {} and not {} ) )".format(
+            P[1], P[1], P[0], P[1]
+        ).split(),
+    ),
+    # 6  Whenever a then b                      globally (a implies b)
+    ("G_IMPL", 2, lambda P: "globally ( {} implies {} )".format(*P).split()),
+    # 7  a & b everywhere                       globally (a and b)
+    ("G_AND_PAIR", 2, lambda P: "globally ( {} and {} )".format(*P).split()),
+    # 8  a always  &  (b ⇒ not c)               globally a  and  globally (b implies not c)
+    (
+        "G_A_AND_G_B_IMPL_NOT_C",
+        3,
+        lambda P: "globally {} and globally ( {} implies not {} )".format(
+            P[0], P[1], P[2]
+        ).split(),
+    ),
+    # 9  (a → finally b) ⇒ globally finally c
+    (
+        "G_IMPL_F_IMPL_GF",
+        3,
+        lambda P: "globally ( {} implies finally {} ) implies globally finally {}".format(
+            P[0], P[1], P[2]
+        ).split(),
+    ),
+    # 10 finally‑often a ⇒ finally‑often b      globally finally a implies globally finally b
+    (
+        "GF_IMPL_GF",
+        2,
+        lambda P: "globally finally {} implies globally finally {}".format(*P).split(),
+    ),
+    # 11 either a or b happens infinitely often
+    (
+        "GF_OR_GF",
+        2,
+        lambda P: "globally finally {} or globally finally {}".format(*P).split(),
+    ),
+    # 12 a eventually stops forever             finally globally not a
+    ("FG_NOT", 1, lambda P: "finally globally not {}".format(P[0]).split()),
+    # 13 if not(a and b) then finally c
+    (
+        "G_NOT_AND_IMPL_F",
+        3,
+        lambda P: "globally ( not ( {} and {} ) implies finally {} )".format(
+            *P
+        ).split(),
+    ),
+    # 14 never (a and b)  &  always (a or b)
+    (
+        "EXCLUSIVE_ALWAYS_ONE",
+        2,
+        lambda P: "globally ( not ( {} and {} ) ) and globally ( {} or {} )".format(
+            P[0], P[1], P[0], P[1]
+        ).split(),
+    ),
+    # 15 equality preservation (double implies)
+    (
+        "G_EQ_IMPL_EQ",
+        3,
+        lambda P: "globally ( ( {} double_implies {} ) implies ( {} double_implies {} ) )".format(
+            P[0], P[1], P[1], P[2]
+        ).split(),
+    ),
+    # 16 a only after b                          not a until b
+    ("NOT_A_UNTIL_B", 2, lambda P: "not {} until {}".format(*P).split()),
+    # 17 once a then never b again               globally (a implies next globally not b)
+    (
+        "G_A_IMPL_XG_NOT_B",
+        2,
+        lambda P: "globally ( {} implies next globally not {} )".format(*P).split(),
+    ),
+    # 18 a releases b                            (b until (b and not a)) or globally b
+    (
+        "A_RELEASES_B",
+        2,
+        lambda P: "( {} until ( {} and not {} ) ) or globally {}".format(
+            P[1], P[1], P[0], P[1]
+        ).split(),
+    ),
+    # 19 same as #2 (variant)
+    ("G_NOT_AND_ALT", 2, lambda P: "globally not ( {} and {} )".format(*P).split()),
+    # 20 a & next b ⇒ next next c
+    (
+        "TWO_STEP_TRIGGER",
+        3,
+        lambda P: "globally ( {} and next {} implies next next {} )".format(*P).split(),
+    ),
+    # 21 a ⇒ next finally b
+    (
+        "NEXT_EVENTUAL",
+        2,
+        lambda P: "globally ( {} implies next finally {} )".format(*P).split(),
+    ),
+    # 22 every fifth step a
+    (
+        "EVERY_FIFTH_STEP",
+        1,
+        lambda P: (
+            f"{P[0]} and "
+            "globally ( "
+            f"{P[0]} implies next not {P[0]} and next next not {P[0]} and "
+            f"next next next not {P[0]} and next next next next not {P[0]} and "
+            f"next next next next next {P[0]} )"
+        ).split(),
+    ),
+    # 23 finally‑often a  or  next b
+    (
+        "GF_A_OR_NEXT_B",
+        2,
+        lambda P: "globally finally {} or next {}".format(*P).split(),
+    ),
+    # 24 always a                                globally a
+    ("G_ALWAYS_A", 1, lambda P: "globally {}".format(P[0]).split()),
+    # 25 a ⇒ (b now or next b)
+    (
+        "A_IMPL_B_WITHIN_1",
+        2,
+        lambda P: "globally ( {} implies ( {} or next {} ) )".format(
+            P[0], P[1], P[1]
+        ).split(),
+    ),
+    # 26 always (a or b or c)
+    ("G_ONE_OF_ABC", 3, lambda P: "globally ( {} or {} or {} )".format(*P).split()),
+    # 27 a ⇒ finally b
+    (
+        "A_IMPL_EVENTUAL_B",
+        2,
+        lambda P: "globally ( {} implies finally {} )".format(*P).split(),
+    ),
+    # 28 soft always‑a (2‑tick grace)
+    (
+        "ALMOST_ALWAYS_A",
+        1,
+        lambda P: "not globally ( not ( {} and next {} ) )".format(P[0], P[0]).split(),
+    ),
+    # 29 not‑a ≤ 2 ticks  (same formula, diff NL)
+    (
+        "NOT_A_AT_MOST_TWO",
+        1,
+        lambda P: "not globally ( not ( {} and next {} ) )".format(P[0], P[0]).split(),
+    ),
+    # 30 a every three ticks
+    (
+        "A_EVERY_THIRD_STEP",
+        1,
+        lambda P: "globally ( {} implies ( next not {} or next next not {} or next next next {} ) )".format(
+            P[0], P[0], P[0], P[0]
+        ).split(),
+    ),
+    # 31 every a directly followed by b
+    ("NEXT_FOLLOW", 2, lambda P: "globally ( {} implies next {} )".format(*P).split()),
+    # 32 eventually a and b together
+    ("EVENTUALLY_BOTH", 2, lambda P: "finally ( {} and {} )".format(*P).split()),
+    # 33 finally a  and  finally b
+    ("BOTH_EVENTUAL", 2, lambda P: "finally {} and finally {}".format(*P).split()),
+    # 34 always (a double_implies next b)
+    (
+        "STEPWISE_EQUALITY",
+        2,
+        lambda P: "globally ( {} double_implies next {} )".format(*P).split(),
+    ),
+    # 35 b ⇒ next (c until a  or  globally c)
+    (
+        "RESPONSE_UNTIL_OR_ALWAYS",
+        3,
+        lambda P: "{} implies next ( ( {} until {} ) or globally {} )".format(
+            P[1], P[2], P[0], P[2]
+        ).split(),
+    ),
+    # 36 (a until b) or globally a
+    (
+        "UNTIL_OR_ALWAYS",
+        2,
+        lambda P: "( {} until {} ) or globally {}".format(P[0], P[1], P[0]).split(),
+    ),
+]
+
+# --- Complex Long-horizon Templates (Mission Composition) ---
+COMPLEX_LTL_TEMPLATES = [
+    # 37 [Sequence] 顺序访问 A -> B -> C
+    # LTL: finally (a and finally (b and finally c))
+    (
+        "SEQ_VISIT_3",
+        3,
+        lambda P: "finally ( {} and finally ( {} and finally {} ) )".format(*P).split(),
+    ),
+    # 38 [Sequence with Global Avoidance] 顺序访问 A -> B，同时全程避开 C
+    # LTL: (finally (a and finally b)) and globally (not c)
+    (
+        "SEQ_VISIT_2_AVOID_1",
+        3,
+        lambda P: "( finally ( {} and finally {} ) ) and globally ( not {} )".format(
+            P[0], P[1], P[2]
+        ).split(),
+    ),
+    # 39 [Strict Ordering] 在 A 发生之前，B 不能发生 (Precedence)
+    # LTL: not b until a
+    ("PRECEDENCE_STRONG", 2, lambda P: "not {} until {}".format(P[1], P[0]).split()),
+    # 40 [Looping/Patrol] 无限次访问 A，且无限次访问 B
+    # LTL: (globally finally a) and (globally finally b)
+    (
+        "PATROL_2_POINTS",
+        2,
+        lambda P: "( globally finally {} ) and ( globally finally {} )".format(
+            *P
+        ).split(),
+    ),
+    # 41 [Safe Response] 如果 A 发生，则必须在 B 发生之前响应 C
+    # LTL: globally (a implies (not b until c))
+    (
+        "SAFE_RESPONSE",
+        3,
+        lambda P: "globally ( {} implies ( not {} until {} ) )".format(*P).split(),
+    ),
+    # 42 [Triggered Stability] 一旦 A 发生，B 就必须永远保持
+    # LTL: globally (a implies globally b)
+    (
+        "STABILIZATION",
+        2,
+        lambda P: "globally ( {} implies globally {} )".format(*P).split(),
+    ),
+]
+
+
+# ----  Natural‑language templates ---------------------------------------
+
+ADDITIONAL_SEMANTIC_TEMPLATES = {
+    "G_IMPL_F": [lambda s: f"Globally, if {s[0]} occurs then finally {s[1]} happens."],
+    "G_NOT_AND": [
+        lambda s: f"Globally, it is not the case that both {s[0]} and {s[1]} hold simultaneously."
+    ],
+    "G_IMPL_XXX": [
+        lambda s: f"Whenever {s[0]} holds, {s[1]} holds exactly three steps later."
+    ],
+    "U_GF": [
+        lambda s: f"{s[0]} must keep holding until, from some point on, {s[1]} holds infinitely often."
+    ],
+    "F_B_IMPL_A_BEFORE": [
+        lambda s: f"If {s[1]} ever holds, {s[0]} must have held beforehand."
+    ],
+    "G_IMPL": [lambda s: f"Whenever {s[0]} holds, {s[1]} holds as well."],
+    "G_AND_PAIR": [lambda s: f"Both {s[0]} and {s[1]} hold at every step."],
+    "G_A_AND_G_B_IMPL_NOT_C": [
+        lambda s: f"{s[0]} holds always, and whenever {s[1]} holds, {s[2]} does not."
+    ],
+    "G_IMPL_F_IMPL_GF": [
+        lambda s: f"If every {s[0]} is eventually followed by {s[1]}, then {s[2]} must occur infinitely often."
+    ],
+    "GF_IMPL_GF": [
+        lambda s: f"If {s[0]} happens infinitely often, then so does {s[1]}."
+    ],
+    "GF_OR_GF": [lambda s: f"Either {s[0]} or {s[1]} happens infinitely often."],
+    "FG_NOT": [lambda s: f"From some point onwards, {s[0]} never occurs again."],
+    "G_NOT_AND_IMPL_F": [
+        lambda s: f"Whenever neither {s[0]} nor {s[1]} holds, {s[2]} eventually holds."
+    ],
+    "EXCLUSIVE_ALWAYS_ONE": [
+        lambda s: f"{s[0]} and {s[1]} never coincide, yet one of them is always true."
+    ],
+    "G_EQ_IMPL_EQ": [
+        lambda s: f"Whenever {s[0]} and {s[1]} are equal, {s[1]} and {s[2]} are equal as well."
+    ],
+    "NOT_A_UNTIL_B": [lambda s: f"{s[0]} can only happen after {s[1]}."],
+    "G_A_IMPL_XG_NOT_B": [
+        lambda s: f"Once {s[0]} has occurred, {s[1]} will never occur again."
+    ],
+    "A_RELEASES_B": [
+        lambda s: f"{s[0]} releases {s[1]} — after {s[0]} ends, {s[1]} must hold continuously."
+    ],
+    "G_NOT_AND_ALT": [
+        lambda s: f"{s[0]} and {s[1]} are mutually exclusive at all times."
+    ],
+    "TWO_STEP_TRIGGER": [
+        lambda s: f"If {s[0]} holds and {s[1]} holds next, then {s[2]} holds in the step after that."
+    ],
+    "NEXT_EVENTUAL": [
+        lambda s: f"Whenever {s[0]} holds, from the next step onwards {s[1]} will eventually hold."
+    ],
+    "EVERY_FIFTH_STEP": [lambda s: f"{s[0]} holds exactly every fifth step."],
+    "GF_A_OR_NEXT_B": [
+        lambda s: f"Either {s[0]} happens infinitely often, or {s[1]} happens in the next step."
+    ],
+    "G_ALWAYS_A": [lambda s: f"{s[0]} holds at all times."],
+    "A_IMPL_B_WITHIN_1": [
+        lambda s: f"When {s[0]} happens, {s[1]} must hold now or in the next step."
+    ],
+    "G_ONE_OF_ABC": [
+        lambda s: f"At every moment, at least one of {s[0]}, {s[1]}, or {s[2]} holds."
+    ],
+    "A_IMPL_EVENTUAL_B": [
+        lambda s: f"Whenever {s[0]} holds, eventually {s[1]} will hold."
+    ],
+    "ALMOST_ALWAYS_A": [
+        lambda s: f"{s[0]} should always hold, with at most a two-step grace period for recovery."
+    ],
+    "NOT_A_AT_MOST_TWO": [
+        lambda s: f"Not {s[0]} may last at most two consecutive steps."
+    ],
+    "A_EVERY_THIRD_STEP": [lambda s: f"{s[0]} occurs at most once every three steps."],
+    "NEXT_FOLLOW": [
+        lambda s: f"Every {s[0]} is directly followed by {s[1]} in the next step."
+    ],
+    "EVENTUALLY_BOTH": [
+        lambda s: f"Eventually, both {s[0]} and {s[1]} hold simultaneously."
+    ],
+    "BOTH_EVENTUAL": [lambda s: f"{s[0]} and {s[1]} will each happen at some point."],
+    "STEPWISE_EQUALITY": [
+        lambda s: f"At every step, {s[0]} equals the value of {s[1]} in the next step."
+    ],
+    "RESPONSE_UNTIL_OR_ALWAYS": [
+        lambda s: f"If {s[1]} holds, then in the next step {s[2]} persists until {s[0]} holds, or else {s[2]} holds forever."
+    ],
+    "UNTIL_OR_ALWAYS": [
+        lambda s: f"{s[0]} must hold until {s[1]} does, or else {s[0]} holds forever."
+    ],
+}
+
+# --- Complex Semantic Templates (Mission Composition) ---
+COMPLEX_SEMANTIC_TEMPLATES = {
+    "SEQ_VISIT_3": [
+        lambda s: f"First {s[0]}, then {s[1]}, and finally {s[2]}.",
+        lambda s: f"Complete the following sequence: {s[0]}, followed by {s[1]}, and ending with {s[2]}.",
+    ],
+    "SEQ_VISIT_2_AVOID_1": [
+        lambda s: f"Visit {s[0]} and then {s[1]}, while always avoiding {s[2]}.",
+        lambda s: f"Ensure that {s[2]} never happens, but make sure to {s[0]} followed by {s[1]}.",
+    ],
+    "PRECEDENCE_STRONG": [
+        lambda s: f"{s[1]} must not happen until {s[0]} has occurred.",
+        lambda s: f"Do not allow {s[1]} unless {s[0]} has already finished.",
+    ],
+    "PATROL_2_POINTS": [
+        lambda s: f"Keep visiting {s[0]} and {s[1]} infinitely often.",
+        lambda s: f"Continually patrol between {s[0]} and {s[1]}.",
+    ],
+    "SAFE_RESPONSE": [
+        lambda s: f"Whenever {s[0]} happens, you must perform {s[2]} before {s[1]} is allowed to occur.",
+    ],
+    "STABILIZATION": [
+        lambda s: f"Once {s[0]} happens, ensure that {s[1]} holds forever after.",
+        lambda s: f"If {s[0]} is triggered, maintain {s[1]} for the rest of the mission.",
+    ],
+}
+
+LTL_TEMPLATES_STATE.extend(ADDITIONAL_LTL_TEMPLATES_STATE)
+LTL_TEMPLATES_STATE.extend(COMPLEX_LTL_TEMPLATES)
+for k, v in ADDITIONAL_SEMANTIC_TEMPLATES.items():
+    SEMANTIC_TEMPLATES.setdefault(k, []).extend(v)
+for k, v in COMPLEX_SEMANTIC_TEMPLATES.items():
+    SEMANTIC_TEMPLATES.setdefault(k, []).extend(v)
+
+
+# ---------------------------------------------------------------------------#
+# 4)  Sentence utilities                                                     #
+# ---------------------------------------------------------------------------#
+def add_ego_reference(sentence: str, ego: str) -> str:
+    first = re.sub(r"[^a-zA-Z]", "", sentence.split()[0]).lower()
+    if first in VERB_LIKE_STARTS:
+        return f"{ego} must {sentence}"
+    return sentence
+
+
+def correct_sentence(sentence: str) -> str:
+    """Simple sentence correction without NLTK (faster)."""
+    # Basic capitalization
+    if sentence:
+        sentence = sentence[0].upper() + sentence[1:]
+    return sentence
+
+
+def pick_sentence_template(key: str):
+    return random.choice(SEMANTIC_TEMPLATES.get(key, GENERIC_TEMPLATES))
+
+
+def build_entry_for_props(
+    idx: int,
+    props: Dict,  # prop_k  -> info
+    actions_cfg: Dict,
+    depth: int = 0,  # recursion depth to prevent infinite loops
+) -> Dict:
+    # ------------------------------------------------------------------ #
+    # 0)  Mission Composition (Recursive)                                 #
+    # ------------------------------------------------------------------ #
+    # 70% chance to compose two tasks when props >= 2 (allows deep composition)
+    MAX_DEPTH = 3  # Prevent infinite recursion
+    if depth < MAX_DEPTH and len(props) >= 2 and random.random() < 0.7:
+        prop_keys = list(props.keys())
+        # Shuffle and split
+        random.shuffle(prop_keys)
+        cut = random.randint(1, len(prop_keys) - 1)
+        keys_a = prop_keys[:cut]
+        keys_b = prop_keys[cut:]
+
+        props_a = {k: props[k] for k in keys_a}
+        props_b = {k: props[k] for k in keys_b}
+
+        # Recursively generate sub-entries (depth controls recursion limit)
+        entry_a = build_entry_for_props(idx, props_a, actions_cfg, depth=depth + 1)
+        entry_b = build_entry_for_props(idx, props_b, actions_cfg, depth=depth + 1)
+
+        # Count props in each entry (from the props dict size)
+        props_in_a = len(props_a)
+        props_in_b = len(props_b)
+
+        # Build remap dict: old_prop -> new_prop
+        # e.g., if entry_a uses 2 props, entry_b's prop_1 -> prop_3, prop_2 -> prop_4
+        offset = props_in_a
+        remap_dict = {
+            f"prop_{i}": f"prop_{offset + i}" for i in range(1, props_in_b + 1)
+        }
+
+        # Apply remapping using the dict (replace longer strings first to avoid partial matches)
+        def remap_text(text):
+            for old, new in sorted(remap_dict.items(), key=lambda x: -len(x[0])):
+                text = text.replace(old, new)
+            return text
+
+        # Remap entry_b props
+        entry_b_remapped = {
+            "tl": remap_text(entry_b["tl"]),
+            "masked_tl": remap_text(entry_b["masked_tl"]),
+            "grounded_sentence": remap_text(entry_b["grounded_sentence"]),
+            "sentence": entry_b["sentence"],
+        }
+
+        # Combine LTL: ( A ) & ( B )
+        final_tl = f"( {entry_a['tl']} ) and ( {entry_b_remapped['tl']} )"
+        final_masked_tl = (
+            f"( {entry_a['masked_tl']} ) and ( {entry_b_remapped['masked_tl']} )"
+        )
+
+        # Combine NL with connectors
+        connectors = [" Also, ", " Moreover, ", " Additionally, ", " Furthermore, "]
+        conn = random.choice(connectors)
+
+        # Simple text concatenation
+        sent_a = entry_a["sentence"]
+        sent_b = entry_b["sentence"]
+        if sent_a.endswith("."):
+            sent_a = sent_a[:-1]
+        final_sentence = f"{sent_a}.{conn}{sent_b}"
+
+        # Combine grounded sentences with connector
+        grounded_a = entry_a["grounded_sentence"]
+        grounded_b = entry_b_remapped["grounded_sentence"]
+        if grounded_a.endswith("."):
+            grounded_a = grounded_a[:-1]
+        final_grounded_sentence = f"{grounded_a}. {conn.strip()} {grounded_b}"
+
+        # Renumber all props sequentially (1, 2, 3...) based on first appearance
+
+        all_text = final_masked_tl + " " + final_grounded_sentence
+        prop_matches = re.findall(r"prop_\d+", all_text)
+        unique_props_ordered = []
+        seen = set()
+        for p in prop_matches:
+            if p not in seen:
+                unique_props_ordered.append(p)
+                seen.add(p)
+
+        # Build renumbering map: old_prop -> prop_N (sequential)
+        prop_renumber = {
+            old: f"prop_{i + 1}" for i, old in enumerate(unique_props_ordered)
+        }
+
+        # Apply renumbering (longer first to avoid partial matches)
+        def renumber_text(text):
+            for old, new in sorted(prop_renumber.items(), key=lambda x: -len(x[0])):
+                text = text.replace(old, new)
+            return text
+
+        final_masked_tl = renumber_text(final_masked_tl)
+        final_grounded_sentence = renumber_text(final_grounded_sentence)
+        final_tl = renumber_text(final_tl)
+
+        return {
+            "id": idx,
+            "sentence": final_sentence,
+            "tl": final_tl,
+            "masked_tl": final_masked_tl,
+            "grounded_sentence": final_grounded_sentence,
+        }
+
+    # ------------------------------------------------------------------ #
+    # 1)  pick a skeleton                                                 #
+    # ------------------------------------------------------------------ #
+    arity = len(props)
+    # Prefer templates that use exactly arity, then templates with more slots (up to arity)
+    # Sort by descending arity to use more props when available
+    viable = [tpl for tpl in LTL_TEMPLATES_STATE if tpl[1] <= arity]
+    viable.sort(key=lambda x: x[1], reverse=True)  # Prefer higher arity
+    key, need, skeleton = random.choice(
+        viable[: max(1, len(viable) // 2)]
+    )  # Pick from top half
+    labels_used = list(props.keys())[:need]  # preserve order
+
+    # ------------------------------------------------------------------ #
+    # 2)  LTL formula (grounded + masked)                                 #
+    # ------------------------------------------------------------------ #
+    def _atom(info):
+        return (
+            f"{info['action_canon']}(" + ",".join(info["args_canon"]) + ")"
+            if info["args_canon"]
+            else info["action_canon"]
+        )
+
+    g_ltl = skeleton([_atom(props[lbl]) for lbl in labels_used])
+    m_ltl = skeleton(labels_used)
+
+    # ─── inside build_entry_for_props ───────────────────────────────────────────
+    def _nl_segment(info):
+        """
+        Build the natural‑language phrase for one proposition, **including**
+        articles (‘the’) and a preposition (‘at’ / ‘on’) where appropriate.
+        """
+        verb = info["action_canon"]
+        params = actions_cfg[verb]["params"]
+        v_ref = info["action_ref"]
+
+        # ------------------------------------------------------------------ #
+        # 0‑argument actions  (idle, get_help, go_home, …)
+        # ------------------------------------------------------------------ #
+        if not params:
+            return v_ref  # “idle”
+
+        # ------------------------------------------------------------------ #
+        # 1‑argument actions  (item, person, threat, target, …)
+        # ------------------------------------------------------------------ #
+        if (
+            params == ["item"]
+            or params == ["person"]
+            or params == ["threat"]
+            or params == ["target"]
+        ):  # ← NEW
+            obj = info["args_ref"][0]
+            return f"{v_ref} the {obj}"  # “photograph the jaywalker”
+
+        # ------------------------------------------------------------------ #
+        # 2‑argument (item,location)   → “deliver the box to the shelf”
+        # ------------------------------------------------------------------ #
+        if params == ["item", "location"]:
+            obj, loc = info["args_ref"]
+            return f"{v_ref} the {obj} to the {loc}"
+
+        # ------------------------------------------------------------------ #
+        # 2‑argument (traffic_target,lane)  → “photograph the pedestrian on west 8th avenue”
+        # ------------------------------------------------------------------ #
+        if params == ["traffic_target", "lane"]:
+            tgt, lane = info["args_ref"]
+            prep = (
+                "on" if any(k in lane for k in ["street", "avenue", "road"]) else "at"
+            )
+            return f"{v_ref} the {tgt} {prep} {lane}"
+
+        # ------------------------------------------------------------------ #
+        # Fallback for exotic signatures
+        # ------------------------------------------------------------------ #
+        return f"{v_ref} " + " ".join(info["args_ref"])
+
+    segs_ground = [_nl_segment(props[l]) for l in labels_used]
+    tpl = pick_sentence_template(key)
+    ego = random.choice(EGO_REFS)
+
+    g_raw = correct_sentence(add_ego_reference(tpl(segs_ground), ego))
+    g_tok = g_raw.split()
+
+    # ------------------------------------------------------------------ #
+    # 4)  After gerund fixes, update props + regenerate segments          #
+    # ------------------------------------------------------------------ #
+    for info in props.values():
+        bare = info["action_ref"].split()[0]
+        ger = _to_gerund(bare)
+        if bare not in g_raw and ger in g_raw:
+            info["action_ref"] = ger
+    segs_ground = [_nl_segment(props[l]) for l in labels_used]  # refresh
+
+    # ------------------------------------------------------------------ #
+    # 4)  Refresh segments *with* gerund fixes                            #
+    # ------------------------------------------------------------------ #
+    def _segment_tokens(lbl: str) -> List[str]:
+        """Lower‑cased tokens of the segment (simple split)."""
+        seg_txt = _nl_segment(props[lbl])
+        seg_txt = seg_txt.lower()
+        # Simple tokenization: split on whitespace and remove punctuation
+        toks = seg_txt.replace(".", "").replace(",", "").split()
+        return toks
+
+    seg_tokens = {lbl: _segment_tokens(lbl) for lbl in labels_used}
+
+    # ------------------------------------------------------------------ #
+    # 5)  Label tokens & build masked sentence                           #
+    # ------------------------------------------------------------------ #
+    pid_map = {lbl: i + 1 for i, lbl in enumerate(labels_used)}  # lbl → 1‑based id
+    mapping = {lbl: f"prop_{pid_map[lbl]}" for lbl in labels_used}
+
+    masked = []
+    i = 0
+    while i < len(g_tok):
+        matched = False
+        for lbl in labels_used:
+            tok_seq = seg_tokens[lbl]
+            L = len(tok_seq)
+            if i + L <= len(g_tok) and all(
+                _same_word(g_tok[i + j], tok_seq[j]) for j in range(L)
+            ):
+                masked.append(mapping[lbl])  # single token in masked sent.
+                i += L
+                matched = True
+                break
+        if not matched:  # normal word
+            masked.append(g_tok[i])
+            i += 1
+
+    masked_tl = [mapping.get(t, t) for t in m_ltl]
+
+    return {
+        "id": idx,
+        "sentence": " ".join(str(x) for x in g_tok),
+        "tl": " ".join(str(x) for x in g_ltl),
+        "masked_tl": " ".join(str(x) for x in masked_tl),
+        "grounded_sentence": " ".join(str(x) for x in masked),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 6)  Build the whole dataset                                                #
+# ---------------------------------------------------------------------------
+
+
+def _sample_argument(kind: str, objects: Dict, locs: List[str]) -> Tuple[str, str]:
+    """Return (canonical, NL‑reference) for an argument of the given kind."""
+    if kind == "item":
+        key = random.choice(list(objects.keys()))
+        canon = key.replace(" ", "_")
+        ref = random.choice(objects[key]).replace("_", " ")
+
+    elif kind == "location":
+        canon = random.choice(locs)
+        ref = canon.replace("_", " ")
+
+    elif kind == "ego":
+        canon, ref = "ego", "yourself"
+
+    # --- target‑specific kinds -------------------------------------------
+    elif kind == "person":
+        mod1 = random.choice(["injured", "safe"])
+        canon = mod1 + "_" + random.choice(["victim", "rescuer", "hostile"])
+        ref = canon.replace("_", " ")
+
+    elif kind == "threat":
+        mod1 = random.choice(["active", "inactive", "impending", "probable", "nearest"])
+        canon = (
+            mod1
+            + "_"
+            + random.choice(
+                ["gas_leak", "unstable_beam", "fire_source", "debris", "flood"]
+            )
+        )
+        ref = canon.replace("_", " ")
+
+    elif kind == "light":
+        pos = random.choice(locs)  # north / south / …
+        canon = f"light_{pos}"
+        ref = f"{pos} light".replace("_", " ")
+
+    elif kind == "lane":
+        dir = random.choice(
+            [
+                "north",
+                "south",
+                "east",
+                "west",
+                "northwest",
+                "northeast",
+                "southwest",
+                "southeast",
+            ]
+        )
+        num = random.choice(
+            ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th", "10th"]
+        )
+        road = random.choice(["street", "avenue"])
+        canon = dir + "_" + num + "_" + road  # random.choice(["lane_a", "lane_b"])
+        ref = canon.replace("_", " ")
+
+    elif kind == "traffic_target":
+        canon = random.choice(
+            [
+                "person",
+                "pedestrian",
+                "vehicle",
+                "car",
+                "motorcycle",
+                "cyclist",
+                "jaywalker",
+                "collision",
+            ]
+        )
+        ref = canon
+
+    elif kind == "sr_target":
+        # choose randomly from the *existing* pools
+        if random.random() < 0.5:  # 50 % person
+            mod1 = random.choice(["injured", "safe", "unsafe"])
+            canon = (
+                mod1 + "_" + random.choice(["person", "civilian", "victim", "rescuer"])
+            )
+            ref = canon.replace("_", " ")
+
+        else:  # 50 % threat
+            canon = random.choice(
+                ["gas_leak", "unstable_beam", "fire_source", "debris", "flood"]
+            )
+        ref = canon.replace("_", " ")
+    elif kind == "color":
+        canon = random.choice(["red", "yellow", "green"])
+        ref = canon
+
+    else:
+        raise ValueError(f"Unknown param kind '{kind}'")
+
+    return canon, ref
+
+
+# ---------------------------------------------------------------------------
+# 6)  Build the whole dataset                                                #
+# ---------------------------------------------------------------------------
+
+
+def build_dataset_entries(
+    object_dict: Dict,
+    actions_dict: Dict,
+    locations: List[str],
+    actions_cfg: Dict,
+    num_entries: int,
+    max_props: int = 8,
+) -> List[Dict]:
+    """
+    Create *exactly* ``num_entries`` dataset entries with up to ``max_props`` propositions.
+    """
+    dataset, label_pool = [], [f"prop_{i + 1}" for i in range(max_props)]
+
+    while len(dataset) < num_entries:
+        # ------------- (a)  sample propositions ---------------------------
+        # Sample between 1 and max_props (bias towards higher values for more complex LTL)
+        want_labels = random.sample(
+            label_pool, k=random.randint(max_props - 2, max_props)
+        )
+        props = {}
+
+        for lbl in want_labels:
+            # Generate a unique proposition directly
+            verb = random.choice(list(actions_dict.keys()))
+            a_canon, a_ref = [], []
+            for kind in actions_cfg[verb]["params"]:
+                c, r = _sample_argument(kind, object_dict, locations)
+                a_canon.append(c)
+                a_ref.append(r)
+
+            props[lbl] = {
+                "action_canon": verb,
+                "action_ref": random.choice(actions_dict[verb]),
+                "args_canon": a_canon,
+                "args_ref": a_ref,
+            }
+
+        # ------------- (b)  build entry ----------------------------------
+        tmp_idx = len(dataset)  # provisional id
+        entry = build_entry_for_props(tmp_idx, props, actions_cfg)
+        dataset.append(entry)
+
+    # make sure the ids are sequential 0…N‑1
+    for new_id, entry in enumerate(dataset):
+        entry["id"] = new_id
+
+    return dataset
+
+
+# ---------------------------------------------------------------------------#
+# 7)  Main                                                                   #
+# ---------------------------------------------------------------------------#
+def main():
+    p = argparse.ArgumentParser(description="Scenario‑aware NL ↔ LTL generator")
+    p.add_argument("-s", "--scenario", default="warehouse")
+    p.add_argument("-n", "--num_entries", type=int, default=5)
+    p.add_argument(
+        "-m",
+        "--max_props",
+        type=int,
+        default=8,
+        help="Maximum number of propositions per entry",
+    )
+    p.add_argument(
+        "-o",
+        "--output",
+        default="new_generated_datasets/LTL/warehouse.jsonl",
+        help="Output JSONL file",
+    )
+    args = p.parse_args()
+
+    cfg, obj_dict, act_dict, locs, act_cfg = load_scenario(args.scenario)
+    entries = build_dataset_entries(
+        obj_dict,
+        act_dict,
+        locs,
+        act_cfg,
+        num_entries=args.num_entries,
+        max_props=args.max_props,
+    )
+
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", encoding="utf-8") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+    print(
+        f"[LTL‑gen] ({args.scenario}) wrote {args.num_entries} examples → {out.as_posix()}"
+    )
+
+
+if __name__ == "__main__":
+    main()

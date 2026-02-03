@@ -20,7 +20,7 @@
 #                      properties: [state‑var, …]     # observable booleans / enums
 # ------------------------------------------------------------------------------
 warehouse:
-  locations: [loading_dock, shelf]
+  locations: [loading_dock, shelf, storage, warehouse_floor, office, entrance, exit, hallway]
 
   actions:
     # ego‑only ---------------------------------------------------------------
@@ -32,6 +32,14 @@ warehouse:
       role:    ego
       params:  []                  # get_help()
 
+    inspect:
+      role:    ego
+      params:  [item]              # inspect(item)
+
+    monitor:
+      role:    ego
+      params:  [item]              # monitor(item)
+
     # one‑argument (item) ----------------------------------------------------
     search:
       role:    ego
@@ -41,21 +49,55 @@ warehouse:
       role:    ego
       params:  [item]              # pickup(item)
 
+    carry:
+      role:    ego
+      params:  [item]              # carry(item)
+
+    collect:
+      role:    ego
+      params:  [item]              # collect(item)
+
+    avoid:
+      role:    ego
+      params:  [item]              # avoid(item)
+
+    navigate:
+      role:    ego
+      params:  [item]              # navigate(item)
+
     # two‑argument (item, destination) --------------------------------------
     deliver:
       role:    ego
       params:  [item, location]    # deliver(item, location)
 
+    place:
+      role:    ego
+      params:  [item, location]    # place(item, location)
 
+    stack:
+      role:    ego
+      params:  [item, location]    # stack(item, location)
+
+    organize:
+      role:    ego
+      params:  [item, location]    # organize(item, location)
+
+    assist:
+      role:    ego
+      params:  [item, location]    # assist(item, location)
+
+    secure:
+      role:    ego
+      params:  [item, location]    # secure(item, location)
 
   targets:
     item:
-      properties: [name]           # e.g. item.name == "teddy_bear" (taken from coco classes in object_names.txt)
+      properties: [name]
 
 
 
 traffic_light:
-  locations: [north, south, east, west]
+  locations: [north, south, east, west, intersection, crosswalk, downtown, highway, downtown_intersection]
 
   actions:
     # ego‑only ---------------------------------------------------------------
@@ -63,17 +105,51 @@ traffic_light:
       role:    ego
       params:  []                        # get_help()
 
+    idle:
+      role:    ego
+      params:  []                        # idle()
+
+    monitor:
+      role:    ego
+      params:  [traffic_target]          # monitor(target)
+
     # control a traffic light -----------------------------------------------
     change:
       role:    ego
       params:  [light, color]            # change(light_id, color)
 
+    activate:
+      role:    ego
+      params:  [light]                   # activate(light)
+
+    deactivate:
+      role:    ego
+      params:  [light]                   # deactivate(light)
+
+    signal:
+      role:    ego
+      params:  [traffic_target, lane]    # signal(target, lane)
+
+    control:
+      role:    ego
+      params:  [light]                   # control(light)
+
+    # observation actions ----------------------------------------------------
     record:
       role:    ego
       params:  [traffic_target, lane]
+
     photo:
       role:    ego
       params:  [traffic_target, lane]
+
+    navigate:
+      role:    ego
+      params:  [location]                 # navigate(location)
+
+    avoid:
+      role:    ego
+      params:  [traffic_target]           # avoid(target)
 
   targets:
     light:
@@ -88,7 +164,7 @@ traffic_light:
 
 
 search_and_rescue:
-  locations: [home_base, structure]
+  locations: [home_base, structure, building, rooftop, basement, parking_lot, entrance, exit, hallway, stairwell, elevator]
 
   actions:
     # ego‑only ---------------------------------------------------------------
@@ -100,6 +176,10 @@ search_and_rescue:
       role:    ego
       params:  []                        # get_help()
 
+    idle:
+      role:    ego
+      params:  []                        # idle()
+
     # person‑centred actions -------------------------------------------------
     communicate:
       role:    ego
@@ -109,17 +189,54 @@ search_and_rescue:
       role:    ego
       params:  [person]                  # deliver_aid(person)
 
+    assist:
+      role:    ego
+      params:  [person]                  # assist(person)
+
+    rescue:
+      role:    ego
+      params:  [person]                  # rescue(person)
+
+    locate:
+      role:    ego
+      params:  [person]                  # locate(person)
+
     # threat‑centred actions -------------------------------------------------
     record:
       role:    ego
       params:  [sr_target]
+
     photo:
       role:    ego
       params:  [sr_target]
-      
+
     avoid:
       role:    ego
       params:  [threat]                  # avoid(threat)
+
+    monitor:
+      role:    ego
+      params:  [threat]                  # monitor(threat)
+
+    secure:
+      role:    ego
+      params:  [threat]                  # secure(threat)
+
+    navigate:
+      role:    ego
+      params:  [location]                # navigate(location)
+
+    search:
+      role:    ego
+      params:  [item]                    # search(item)
+
+    pickup:
+      role:    ego
+      params:  [item]                    # pickup(item)
+
+    deliver:
+      role:    ego
+      params:  [item, location]          # deliver(item, location)
 
   targets:
     person:
