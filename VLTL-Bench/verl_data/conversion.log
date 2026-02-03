@@ -1,0 +1,30 @@
+VERL Parquet Conversion Log - 2026-01-30T15:41:50.440649
+Backend: pyarrow
+============================================================
+
+Split: train
+  search_and_rescue.jsonl: 5112/5112 lines
+  traffic_light.jsonl: 5123/5123 lines
+  warehouse.jsonl: 5219/5219 lines
+
+  Semantic fields statistics:
+    All semantic fields present in all records
+  Total lines: 15454
+  Written rows: 15454
+  Skipped: 0
+  Output: VLTL-Bench/verl_data/train.parquet
+
+Split: test
+  search_and_rescue.jsonl: 2192/2192 lines
+  traffic_light.jsonl: 2196/2196 lines
+  warehouse.jsonl: 2238/2238 lines
+
+  Semantic fields statistics:
+    All semantic fields present in all records
+  Total lines: 6626
+  Written rows: 6626
+  Skipped: 0
+  Output: VLTL-Bench/verl_data/test.parquet
+
+============================================================
+TOTAL: 22080/22080 rows converted
