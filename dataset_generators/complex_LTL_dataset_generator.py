@@ -4,7 +4,7 @@ import random
 import re
 import string
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Callable
 
 import yaml
 
@@ -1289,6 +1289,227 @@ def _blueprint_stability(
     }
 
 
+# =========================================================================
+# 8. HYBRID MISSION FACTORY (New Architecture)
+# =========================================================================
+
+
+# --- 1. Logic Fragments ---
+
+def _fragment_patrol(props: List[str]) -> str:
+    """Generate patrol mode: []<> (p1 && <> p2 && <> p3...)"""
+    if not props:
+        return ""
+    if len(props) == 1:
+        return f"globally ( finally {props[0]} )"
+    
+    # Nested finally structure: p1 and finally (p2 and finally p3)
+    inner = props[-1]
+    for p in reversed(props[:-1]):
+        inner = f"( {p} and finally {inner} )"
+    return f"globally ( finally {inner} )"
+
+
+def _fragment_avoidance(props: List[str]) -> str:
+    """Generate safety/avoidance mode: []!p1 && []!p2"""
+    return " and ".join([f"( globally not {p} )" for p in props])
+
+
+def _fragment_sequence(props: List[str]) -> str:
+    """Generate sequence mode: <> (p1 && <> (p2 && <> p3))"""
+    if not props:
+        return ""
+    if len(props) == 1:
+        return f"finally {props[0]}"
+        
+    inner = props[-1]
+    for p in reversed(props[:-1]):
+        inner = f"( {p} and finally {inner} )"
+    return f"finally {inner}"
+
+
+def _fragment_reaction(props: List[str]) -> str:
+    """Generate response constraint: [] (Trigger -> X (Stay U Target))"""
+    if len(props) < 3:
+        return ""
+    return f"globally ( {props[0]} implies next ( {props[1]} until {props[2]} ) )"
+
+
+# --- 2. Basic Template Bridge ---
+
+def _get_basic_template_fragment(prop_keys: List[str], props: Dict, actions_cfg: Dict) -> Tuple[str, Callable, str]:
+    """
+    Selects a basic template from LTL_TEMPLATES_STATE that matches the arity.
+    Returns (LTL_str, NL_lambda, Masked_LTL_str)
+    """
+    n = len(prop_keys)
+    
+    # 1. Filter templates by exact arity match
+    candidates = [t for t in LTL_TEMPLATES_STATE if t[1] == n]
+    
+    # Fallback: if no exact match, try arity=2 and take first 2 props (if n > 2)
+    # or arity=1 (if n=1)
+    if not candidates:
+        if n > 2:
+            candidates = [t for t in LTL_TEMPLATES_STATE if t[1] == 2]
+            used_keys = prop_keys[:2]
+        else:
+            candidates = [t for t in LTL_TEMPLATES_STATE if t[1] == 1]
+            used_keys = prop_keys[:1]
+    else:
+        used_keys = prop_keys
+
+    if not candidates:
+        # Emergency fallback to simple sequence
+        return (
+            _fragment_sequence([_pure_atom(props[k]) for k in prop_keys]),
+            lambda s: " then ".join(s),
+            _fragment_sequence(prop_keys)
+        )
+
+    # 2. Pick a template
+    key, arity, skeleton = random.choice(candidates)
+    
+    # 3. Generate LTL & Masked
+    # skeleton returns list of tokens, join with space
+    # BUT: skeleton expects pure atoms? 
+    # Logic in _build_atomic_entry uses _atom(prop_info) which includes args.
+    # Here we also use _pure_atom(props[k]) which includes args. 
+    # Because LTL_TEMPLATES_STATE skeletons like ["finally", "(", "not", P[0], ")"] expect P[0] to be the atom string.
+    
+    atom_strs = [_pure_atom(props[k]) for k in used_keys]
+    ltl_str = " ".join(skeleton(atom_strs))
+    
+    masked_strs = used_keys
+    masked_ltl_str = " ".join(skeleton(masked_strs))
+    
+    # 4. Get NL template lambda
+    # We return the lambda so it can be called with verb phrases later
+    # SEMANTIC_TEMPLATES[key] is a list of lambdas
+    nl_templates = SEMANTIC_TEMPLATES.get(key, GENERIC_TEMPLATES)
+    nl_lambda = random.choice(nl_templates)
+    
+    return ltl_str, nl_lambda, masked_ltl_str
+
+
+# --- 3. Hybrid Fusion Blueprint ---
+
+def _blueprint_hybrid_fusion(idx: int, props: Dict, prop_keys: List[str], actions_cfg: Dict) -> Dict:
+    """
+    Hybrid Mission Factory:
+    Splits props into 3 groups (Complex, Basic, Safety) and fuses them.
+    """
+    n = len(prop_keys)
+    # Shuffle keys to ensure random distribution
+    # Note: prop_keys is a list of strings 'prop_1', 'prop_2'... 
+    # We should work on a copy to not affect caller? Caller passes a list, we can shuffle it.
+    # But usually we want deterministic behavior if seeded. random.shuffle is fine.
+    # However, to avoid side effects if this list is reused (it's not), good practice to copy.
+    keys_shuffled = prop_keys[:]
+    random.shuffle(keys_shuffled)
+    
+    # 1. Dynamic Partitioning
+    # We need at least some props. If n is small (e.g. 2), we can't split into 3 useful groups.
+    # Minimum for full hybrid: 2 (complex) + 2 (basic) + 1 (safety) = 5?
+    # Logic from prompt: "n=7 -> 3, 2, 2"
+    
+    g_complex, g_basic, g_safety = [], [], []
+
+    if n < 3:
+        # Too small for hybrid, just dump to complex
+        g_complex = keys_shuffled
+    else:
+        # Try to give 2+ to complex, maybe some to basic, rest to safety
+        # Partition logic:
+        # random cut points
+        if n >= 5:
+            cut1 = random.randint(2, n - 3) # ensure at least 2 for complex, leave 3
+            cut2 = random.randint(cut1 + 1, n - 1) # ensure at least 1 for basic
+        elif n == 4:
+            cut1 = 2
+            cut2 = 3
+        else: # n=3
+            cut1 = 1
+            cut2 = 2
+            
+        g_complex = keys_shuffled[:cut1]
+        g_basic = keys_shuffled[cut1:cut2]
+        g_safety = keys_shuffled[cut2:]
+
+    ltl_segs, nl_segs, msk_segs = [], [], []
+
+    # 2. Complex Mission Segment
+    if g_complex:
+        # Patrol if >= 2 props and coin flip, else Sequence
+        is_patrol = random.random() > 0.5 and len(g_complex) >= 2
+        func = _fragment_patrol if is_patrol else _fragment_sequence
+        
+        # LTL & Masked
+        ltl_segs.append(func([_pure_atom(props[k]) for k in g_complex]))
+        msk_segs.append(func(g_complex))
+        
+        # NL
+        verb_phrases = [_verb_phrase(props[k], actions_cfg) for k in g_complex]
+        verb_chain = " then ".join(verb_phrases)
+        
+        if is_patrol:
+            # "Continually visit X then Y..."
+            if len(g_complex) > 1:
+                nl_segs.append(f"Continually visit {verb_chain}")
+            else:
+                nl_segs.append(f"Continually visit {verb_phrases[0]}")
+        else:
+            # "First X then Y..."
+            nl_segs.append(f"First {verb_chain}")
+
+    # 3. Basic Template Segment
+    if g_basic:
+        basic_ltl, basic_nl_fn, basic_msk = _get_basic_template_fragment(g_basic, props, actions_cfg)
+        ltl_segs.append(basic_ltl)
+        msk_segs.append(basic_msk)
+        
+        basic_phrases = [_verb_phrase(props[k], actions_cfg) for k in g_basic]
+        try:
+            nl_segs.append(basic_nl_fn(basic_phrases))
+        except IndexError:
+             nl_segs.append("Basic task: " + " and ".join(basic_phrases))
+
+    # 4. Safety Constraint Segment
+    if g_safety:
+        safety_ltl = _fragment_avoidance([_pure_atom(props[k]) for k in g_safety])
+        safety_msk = _fragment_avoidance(g_safety)
+        
+        ltl_segs.append(safety_ltl)
+        msk_segs.append(safety_msk)
+        
+        safety_phrases = [_verb_phrase(props[k], actions_cfg) for k in g_safety]
+        nl_segs.append("meanwhile, always avoid " + " and ".join(safety_phrases))
+
+    # 5. Assembly
+    # Filter out empty strings if any fragment returned empty
+    ltl_segs = [s for s in ltl_segs if s]
+    msk_segs = [s for s in msk_segs if s]
+    nl_segs = [s for s in nl_segs if s]
+
+    final_tl = " and ".join([f"( {s} )" for s in ltl_segs])
+    final_masked = " and ".join([f"( {s} )" for s in msk_segs])
+    
+    raw_nl = ". ".join(nl_segs)
+    if not raw_nl.endswith("."):
+        raw_nl += "."
+    
+    final_sentence = correct_sentence(raw_nl)
+
+    return {
+        "id": idx,
+        "tl": final_tl,
+        "masked_tl": final_masked,
+        "sentence": final_sentence,
+        "grounded_sentence": final_sentence,
+        "task_type": "hybrid_mission",
+        "num_props": n
+    }
+
 # Blueprint registry: (function, min_props, weight)
 BLUEPRINTS = [
     (_blueprint_simple_list, 2, 20),
@@ -1297,6 +1518,7 @@ BLUEPRINTS = [
     (_blueprint_trigger_response, 2, 15),
     (_blueprint_alternative_plans, 2, 15),
     (_blueprint_stability, 2, 10),
+    (_blueprint_hybrid_fusion, 3, 50),
 ]
 
 
@@ -1366,14 +1588,10 @@ def build_entry_for_props(
     actions_cfg: Dict,
     depth: int = 0,  # recursion depth to prevent infinite loops
 ) -> Dict:
-    # ------------------------------------------------------------------ #
-    # 0)  Mission Composition (Recursive)                                 #
-    # ------------------------------------------------------------------ #
-    # 70% chance to compose two tasks when props >= 2 (allows deep composition)
-    MAX_DEPTH = 3  # Prevent infinite recursion
+    # 递归方式组合子任务，保持原有算法
+    MAX_DEPTH = 3
     if depth < MAX_DEPTH and len(props) >= 2 and random.random() < 0.7:
         prop_keys = list(props.keys())
-        # Shuffle and split
         random.shuffle(prop_keys)
         cut = random.randint(1, len(prop_keys) - 1)
         keys_a = prop_keys[:cut]
@@ -1382,22 +1600,17 @@ def build_entry_for_props(
         props_a = {k: props[k] for k in keys_a}
         props_b = {k: props[k] for k in keys_b}
 
-        # Recursively generate sub-entries (depth controls recursion limit)
         entry_a = build_entry_for_props(idx, props_a, actions_cfg, depth=depth + 1)
         entry_b = build_entry_for_props(idx, props_b, actions_cfg, depth=depth + 1)
 
-        # Count props in each entry (from the props dict size)
         props_in_a = len(props_a)
         props_in_b = len(props_b)
 
-        # Build remap dict: old_prop -> new_prop
-        # e.g., if entry_a uses 2 props, entry_b's prop_1 -> prop_3, prop_2 -> prop_4
         offset = props_in_a
         remap_dict = {
             f"prop_{i}": f"prop_{offset + i}" for i in range(1, props_in_b + 1)
         }
 
-        # Use safe_renumber for collision-free remapping
         entry_b_remapped = {
             "tl": safe_renumber(entry_b["tl"], remap_dict),
             "masked_tl": safe_renumber(entry_b["masked_tl"], remap_dict),
@@ -1407,27 +1620,20 @@ def build_entry_for_props(
             "sentence": entry_b["sentence"],
         }
 
-        # Combine using randomly selected meta composition template
         composer = random.choice(META_COMPOSITION_TEMPLATES)
         tl_parts, nl_parts = composer(entry_a, entry_b_remapped)
 
-        # Extract TL and NL components
         final_tl = tl_parts
         final_masked_tl = (
             f"( {entry_a['masked_tl']} ) or ( {entry_b_remapped['masked_tl']} )"
         )
-
-        # Use the NL sentence from the composer
         final_sentence = nl_parts
 
-        # Grounded sentence needs special handling - combine with connector
         grounded_a = entry_a["grounded_sentence"]
         grounded_b = entry_b_remapped["grounded_sentence"]
         if grounded_a.endswith("."):
             grounded_a = grounded_a[:-1]
         final_grounded_sentence = f"{grounded_a}. Also, {grounded_b}"
-
-        # Renumber all props sequentially (1, 2, 3...) based on first appearance
 
         all_text = final_masked_tl + " " + final_grounded_sentence
         prop_matches = re.findall(r"prop_\d+", all_text)
@@ -1438,12 +1644,10 @@ def build_entry_for_props(
                 unique_props_ordered.append(p)
                 seen.add(p)
 
-        # Build renumbering map: old_prop -> prop_N (sequential)
         prop_renumber = {
             old: f"prop_{i + 1}" for i, old in enumerate(unique_props_ordered)
         }
 
-        # Use safe_renumber for collision-free final renumbering
         final_masked_tl = safe_renumber(final_masked_tl, prop_renumber)
         final_grounded_sentence = safe_renumber(final_grounded_sentence, prop_renumber)
         final_tl = safe_renumber(final_tl, prop_renumber)
@@ -1456,115 +1660,37 @@ def build_entry_for_props(
             "grounded_sentence": final_grounded_sentence,
         }
 
-    # ------------------------------------------------------------------ #
-    # 1)  pick a skeleton                                                 #
-    # ------------------------------------------------------------------ #
+    # 选择合适的模板骨架
     arity = len(props)
-    # Prefer templates that use exactly arity, then templates with more slots (up to arity)
-    # Sort by descending arity to use more props when available
     viable = [tpl for tpl in LTL_TEMPLATES_STATE if tpl[1] <= arity]
-    viable.sort(key=lambda x: x[1], reverse=True)  # Prefer higher arity
-    key, need, skeleton = random.choice(
-        viable[: max(1, len(viable) // 2)]
-    )  # Pick from top half
-    labels_used = list(props.keys())[:need]  # preserve order
+    viable.sort(key=lambda x: x[1], reverse=True)
+    key, need, skeleton = random.choice(viable[: max(1, len(viable) // 2)])
+    labels_used = list(props.keys())[:need]
 
-    # ------------------------------------------------------------------ #
-    # 2)  LTL formula (grounded + masked)                                 #
-    # ------------------------------------------------------------------ #
-    def _atom(info):
-        return (
-            f"{info['action_canon']}(" + ",".join(info["args_canon"]) + ")"
-            if info["args_canon"]
-            else info["action_canon"]
-        )
-
+    # 生成 LTL（带原子与 masked）
     g_ltl = skeleton([_atom(props[lbl]) for lbl in labels_used])
     m_ltl = skeleton(labels_used)
 
-    # ─── inside build_entry_for_props ───────────────────────────────────────────
-    def _nl_segment(info):
-        """
-        Build the natural‑language phrase for one proposition, **including**
-        articles (‘the’) and a preposition (‘at’ / ‘on’) where appropriate.
-        """
-        verb = info["action_canon"]
-        params = actions_cfg[verb]["params"]
-        v_ref = info["action_ref"]
-
-        # ------------------------------------------------------------------ #
-        # 0‑argument actions  (idle, get_help, go_home, …)
-        # ------------------------------------------------------------------ #
-        if not params:
-            return v_ref  # “idle”
-
-        # ------------------------------------------------------------------ #
-        # 1‑argument actions  (item, person, threat, target, …)
-        # ------------------------------------------------------------------ #
-        if (
-            params == ["item"]
-            or params == ["person"]
-            or params == ["threat"]
-            or params == ["target"]
-        ):  # ← NEW
-            obj = info["args_ref"][0]
-            return f"{v_ref} the {obj}"  # “photograph the jaywalker”
-
-        # ------------------------------------------------------------------ #
-        # 2‑argument (item,location)   → “deliver the box to the shelf”
-        # ------------------------------------------------------------------ #
-        if params == ["item", "location"]:
-            obj, loc = info["args_ref"]
-            return f"{v_ref} the {obj} to the {loc}"
-
-        # ------------------------------------------------------------------ #
-        # 2‑argument (traffic_target,lane)  → “photograph the pedestrian on west 8th avenue”
-        # ------------------------------------------------------------------ #
-        if params == ["traffic_target", "lane"]:
-            tgt, lane = info["args_ref"]
-            prep = (
-                "on" if any(k in lane for k in ["street", "avenue", "road"]) else "at"
-            )
-            return f"{v_ref} the {tgt} {prep} {lane}"
-
-        # ------------------------------------------------------------------ #
-        # Fallback for exotic signatures
-        # ------------------------------------------------------------------ #
-        return f"{v_ref} " + " ".join(info["args_ref"])
-
-    segs_ground = [_nl_segment(props[l]) for l in labels_used]
+    # 生成自然语言句子并进行动名词修正
+    segs_ground = [_nl_segment(props[l], actions_cfg) for l in labels_used]
     tpl = pick_sentence_template(key)
     ego = random.choice(EGO_REFS)
-
     g_raw = correct_sentence(add_ego_reference(tpl(segs_ground), ego))
     g_tok = g_raw.split()
 
-    # ------------------------------------------------------------------ #
-    # 4)  After gerund fixes, update props + regenerate segments          #
-    # ------------------------------------------------------------------ #
     for info in props.values():
         bare = info["action_ref"].split()[0]
         ger = _to_gerund(bare)
         if bare not in g_raw and ger in g_raw:
             info["action_ref"] = ger
-    segs_ground = [_nl_segment(props[l]) for l in labels_used]  # refresh
+    segs_ground = [_nl_segment(props[l], actions_cfg) for l in labels_used]
 
-    # ------------------------------------------------------------------ #
-    # 4)  Refresh segments *with* gerund fixes                            #
-    # ------------------------------------------------------------------ #
     def _segment_tokens(lbl: str) -> List[str]:
-        """Lower‑cased tokens of the segment (simple split)."""
-        seg_txt = _nl_segment(props[lbl])
-        seg_txt = seg_txt.lower()
-        # Simple tokenization: split on whitespace and remove punctuation
-        toks = seg_txt.replace(".", "").replace(",", "").split()
-        return toks
+        seg_txt = _nl_segment(props[lbl], actions_cfg).lower()
+        return seg_txt.replace(".", "").replace(",", "").split()
 
     seg_tokens = {lbl: _segment_tokens(lbl) for lbl in labels_used}
 
-    # ------------------------------------------------------------------ #
-    # 5)  Label tokens & build masked sentence                           #
-    # ------------------------------------------------------------------ #
     pid_map = {lbl: i + 1 for i, lbl in enumerate(labels_used)}  # lbl → 1‑based id
     mapping = {lbl: f"prop_{pid_map[lbl]}" for lbl in labels_used}
 

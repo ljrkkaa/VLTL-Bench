@@ -1,2 +1,4 @@
 pandas
 tqdm
+aiohttp
+python-dotenv
