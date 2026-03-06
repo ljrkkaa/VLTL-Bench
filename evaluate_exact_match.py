@@ -52,7 +52,8 @@ def calculate_exact_match_accuracy(pred_file):
 
 
 if __name__ == "__main__":
-    pred_file = "predictions/warehouse_nl_alpaca_pred.jsonl"
+    # pred_file = "predictions/lora_model/warehouse_nl_alpaca_pred.jsonl"
+    pred_file = "predictions/rl_model/warehouse_nl_alpaca_pred.jsonl"
 
     accuracy, correct, total = calculate_exact_match_accuracy(pred_file)
 

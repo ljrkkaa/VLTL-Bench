@@ -1,7 +1,7 @@
 import pandas as pd
 
 # 读取 parquet 文件
-df = pd.read_parquet("VLTL-Bench/new_generated_datasets/warehouse_nl.parquet")
+df = pd.read_parquet("new_generated_datasets/warehouse_nl_test.parquet")
 
 # 查看数据表的前几行
 print(df.head(1))  # 第一组数据

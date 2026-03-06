@@ -8,11 +8,12 @@ f  = spot.formula(
     'F(p7 || p8) && '           # 最终 p7 或 p8 发生
     '!p9 U p0'                  # p9 不发生直到 p0 发生
 )
+f  = spot.formula("finally globally ( finally not prop_3 or finally not prop_4 ) 並且 finally globally ( finally prop_1 and finally prop_7 ) 和 finally not prop_8 或 finally not prop_2 或 finally not prop_6 同时 （ finally prop_5 and ( not prop_2 or not prop_6 ) ）")
 
 
 # 1. 化简公式
-simplified_f = spot.simplify(f)
-print(f"化简后: {simplified_f}")
+# simplified_f = spot.simplify(f)
+# print(f"化简后: {simplified_f}")
 
 # 2. 检查可满足性 (正确的方法)
 # translate(f) 会将 LTL 转为自动机，is_empty() 检查自动机是否有接受路径

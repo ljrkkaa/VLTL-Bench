@@ -80,13 +80,25 @@ def write_parquet(rows: list, output_path: Path, backend_name: str, backend_modu
         df.to_parquet(str(output_path), index=False)
 
 
-def convert_jsonl(input_path: Path, split: str = "test") -> tuple[list, int, list]:
+def convert_jsonl(input_path: Path, split: str = "test") -> tuple[list, int, list, list]:
     """
     将 warehouse_nl.jsonl 转换为 VERL 格式行。
+    
+    Args:
+        input_path: 输入文件路径
+        split: "train" 或 "test"，用于筛选数据
+        
+    Returns:
+        (rows, total_lines, skipped, original_ids) 元组
+        - rows: VERL 格式的行列表
+        - total_lines: 总行数
+        - skipped: 跳过的行信息列表
+        - original_ids: 每行对应的 original_id 列表（用于分割）
     """
     rows = []
     total_lines = 0
     skipped = []
+    original_ids = []  # 用于分割
     global_index = 0
 
     with open(input_path, "r", encoding="utf-8") as f:
@@ -115,7 +127,7 @@ def convert_jsonl(input_path: Path, split: str = "test") -> tuple[list, int, lis
                 skipped.append((input_path.name, line_num, "invalid 'nl'"))
                 continue
 
-            # 验证 tl 字段 (作为 ground truth)
+            # 验证 tl 字段 (完整 LTL 公式)
             tl = record.get("tl")
             if tl is None:
                 skipped.append((input_path.name, line_num, "missing 'tl'"))
@@ -124,32 +136,44 @@ def convert_jsonl(input_path: Path, split: str = "test") -> tuple[list, int, lis
                 skipped.append((input_path.name, line_num, "invalid 'tl'"))
                 continue
 
+            # 验证 masked_tl 字段 (带占位符的LTL公式，作为训练目标)
+            masked_tl = record.get("masked_tl")
+            if masked_tl is None:
+                skipped.append((input_path.name, line_num, "missing 'masked_tl'"))
+                continue
+            if not isinstance(masked_tl, str) or not masked_tl.strip():
+                skipped.append((input_path.name, line_num, "invalid 'masked_tl'"))
+                continue
+
             # 获取其他可选字段
             record_id = record.get("id", "")
             original_id = record.get("original_id", 0)
             sentence_idx = record.get("sentence_idx", 0)
-            masked_tl = record.get("masked_tl", "")
 
             # 构建 VERL 格式的行
+            # 注意: ground_truth 使用 masked_tl（带占位符的LTL公式），因为训练时模型需要预测带占位符的公式
             verl_row = {
                 "data_source": DATA_SOURCE,
                 "prompt": [{"role": "user", "content": nl}],
                 "ability": ABILITY,
-                "reward_model": {"style": "rule", "ground_truth": tl},
+                "reward_model": {"style": "rule", "ground_truth": masked_tl},
                 "extra_info": {
                     "index": global_index,
+                    "sentence_idx": sentence_idx
                 },
             }
 
             rows.append(verl_row)
+            original_ids.append(original_id)
             global_index += 1
 
-    return rows, total_lines, skipped
+    return rows, total_lines, skipped, original_ids
 
 
 def main():
     """
-    主函数: 将 warehouse_nl.jsonl 转换为 VERL parquet 格式。
+    主函数: 将 warehouse_nl.jsonl 转换为 VERL parquet 格式，
+    按 original_id 分割为 train (80%) 和 test (20%) 两部分。
     """
     base_dir = Path(__file__).parent
     input_path = base_dir / "new_generated_datasets" / "warehouse_nl.jsonl"
@@ -173,14 +197,50 @@ def main():
 
         log_file.write(f"Processing: {input_path}\n")
 
-        rows, total, skipped = convert_jsonl(input_path, split="test")
+        # 读取所有数据（同时获取 original_ids 用于分割）
+        all_rows, total, skipped, original_ids_list = convert_jsonl(input_path, split="all")
 
-        # 写入 parquet 文件
-        output_path = output_dir / "warehouse_nl.parquet"
-        write_parquet(rows, output_path, backend_name, backend_module)
+        # 按 original_id 分割数据
+        # 收集所有唯一的 original_id
+        original_ids = set(original_ids_list)
+        original_ids = sorted(list(original_ids))
+        total_unique = len(original_ids)
+        
+        # 80% train, 20% test (按 original_id 分割)
+        train_ratio = 0.8
+        split_idx = int(total_unique * train_ratio)
+        train_original_ids = set(original_ids[:split_idx])
+        test_original_ids = set(original_ids[split_idx:])
+        
+        train_rows = []
+        test_rows = []
+        
+        for row, orig_id in zip(all_rows, original_ids_list):
+            if orig_id in train_original_ids:
+                train_rows.append(row)
+            else:
+                test_rows.append(row)
+        
+        # 重新编号 index
+        for i, row in enumerate(train_rows):
+            row["extra_info"]["index"] = i
+        for i, row in enumerate(test_rows):
+            row["extra_info"]["index"] = i
+
+        # 写入 train parquet 文件
+        train_output_path = output_dir / "warehouse_nl_train.parquet"
+        write_parquet(train_rows, train_output_path, backend_name, backend_module)
+
+        # 写入 test parquet 文件
+        test_output_path = output_dir / "warehouse_nl_test.parquet"
+        write_parquet(test_rows, test_output_path, backend_name, backend_module)
 
         log_file.write(f"\n  Total lines: {total}\n")
-        log_file.write(f"  Written rows: {len(rows)}\n")
+        log_file.write(f"  Total unique original_ids: {total_unique}\n")
+        log_file.write(f"  Train original_ids: {len(train_original_ids)}\n")
+        log_file.write(f"  Test original_ids: {len(test_original_ids)}\n")
+        log_file.write(f"  Written train rows: {len(train_rows)}\n")
+        log_file.write(f"  Written test rows: {len(test_rows)}\n")
         log_file.write(f"  Skipped: {len(skipped)}\n")
 
         # 记录跳过的行
@@ -191,11 +251,13 @@ def main():
             if len(skipped) > 20:
                 log_file.write(f"    ... and {len(skipped) - 20} more\n")
 
-        log_file.write(f"\n  Output: {output_path}\n")
+        log_file.write(f"\n  Train output: {train_output_path}\n")
+        log_file.write(f"  Test output: {test_output_path}\n")
         log_file.write("=" * 60 + "\n")
-        log_file.write(f"TOTAL: {len(rows)}/{total} rows converted\n")
+        log_file.write(f"TOTAL: Train {len(train_rows)} / Test {len(test_rows)} / Skipped {len(skipped)}\n")
 
-        print(f"Converted: {len(rows)}/{total} rows -> {output_path}")
+        print(f"Converted: {len(train_rows)} train rows -> {train_output_path}")
+        print(f"Converted: {len(test_rows)} test rows -> {test_output_path}")
         print(f"Backend used: {backend_name}")
         print(f"Log: {log_path}")
 
