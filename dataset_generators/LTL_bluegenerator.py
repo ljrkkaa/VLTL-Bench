@@ -810,6 +810,17 @@ def _sample_argument(kind: str, objects: Dict, locs: List[str]) -> Tuple[str, st
 # ============================================================================
 
 
+# Token limit for LTL formulas
+MAX_LTL_TOKENS = 80
+
+
+def count_ltl_tokens(ltl_formula: str) -> int:
+    """计算LTL公式的token数量"""
+    # LTL公式以空格分隔，每个token就是一个token
+    tokens = ltl_formula.split()
+    return len(tokens)
+
+
 def build_dataset_entries(
     object_dict: Dict,
     actions_dict: Dict,
@@ -826,6 +837,7 @@ def build_dataset_entries(
     2. 确保每个模板至少被使用一次
     3. 使命类型多样化
     4. 实时验证 LTL 公式，过滤不可满足的公式，保存简化公式
+    5. LTL公式不超过80个token
 
     Args:
         object_dict: 对象字典
@@ -867,6 +879,7 @@ def build_dataset_entries(
     # 验证统计
     verified_count = 0
     rejected_count = 0
+    token_limit_rejected_count = 0  # 因token数量超限被拒绝的计数
 
     entry_idx = 0
     while len(dataset) < num_entries:
@@ -929,7 +942,15 @@ def build_dataset_entries(
         entry["mission_type"] = mission_type
         entry["num_props"] = num_props
 
-        # ===== 5. 验证公式（如果启用） =====
+        # ===== 5. 检查LTL公式token数量 =====
+        ltl_token_count = count_ltl_tokens(entry["tl"])
+        if ltl_token_count > MAX_LTL_TOKENS:
+            # 超过80个token，重新生成
+            token_limit_rejected_count += 1
+            entry_idx += 1
+            continue
+
+        # ===== 6. 验证公式（如果启用） =====
         if verify and SPOT_AVAILABLE:
             # 构建命题映射：prop_id -> 实际命题字符串
             # 用于将简化后的公式中的简化命题名还原为实际命题
@@ -1000,7 +1021,7 @@ def build_dataset_entries(
 
         dataset.append(entry)
 
-        # ===== 6. 更新模板使用计数 =====
+        # ===== 7. 更新模板使用计数 =====
         def count_template_usage(node):
             """递归统计逻辑树中使用的模板"""
             if isinstance(node, str):
@@ -1025,6 +1046,8 @@ def build_dataset_entries(
     if verify and SPOT_AVAILABLE:
         print(f"[LTL-gen] 验证统计: 通过 {verified_count} 条, 拒绝 {rejected_count} 条")
 
+    print(f"[LTL-gen] Token限制: 超过80个token被拒绝 {token_limit_rejected_count} 条")
+
     return dataset
 
 
@@ -1036,14 +1059,16 @@ def build_dataset_entries(
 def main():
     parser = argparse.ArgumentParser(description="LTL 公式生成器 - AST 元蓝图版")
     parser.add_argument("-s", "--scenario", default="warehouse", help="场景名称")
-    parser.add_argument("-n", "--num_entries", type=int, default=5000, help="生成条目数")
+    parser.add_argument(
+        "-n", "--num_entries", type=int, default=3000, help="生成条目数"
+    )
     parser.add_argument(
         "-m", "--max_props", type=int, default=10, help="每个条目的最大命题数"
     )
     parser.add_argument(
         "-o",
         "--output",
-        default="new_generated_datasets/warehouse.jsonl",
+        default="/data/ljr/llm_experiments/ljr_ltl_datasetV1/rawltl.jsonl",
         help="输出 JSONL 文件路径",
     )
     parser.add_argument(

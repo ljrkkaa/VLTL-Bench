@@ -1075,6 +1075,20 @@ def _entry_is_valid(entry: Dict) -> bool:
     return True
 
 
+# Token limit for LTL formulas
+MAX_LTL_TOKENS = 80
+
+
+def count_ltl_tokens(ltl_formula) -> int:
+    """计算LTL公式的token数量"""
+    # LTL公式可能是list或str
+    if isinstance(ltl_formula, list):
+        return len(ltl_formula)
+    # LTL公式以空格分隔，每个token就是一个token
+    tokens = ltl_formula.split()
+    return len(tokens)
+
+
 # ---------------------------------------------------------------------------
 # 6)  Build the whole dataset  (with validation & resampling)                #
 # ---------------------------------------------------------------------------
@@ -1093,9 +1107,11 @@ def build_dataset_entries(
 
     An entry is thrown away and re‑sampled whenever
       – it misses at least one prop‑id in lifted_sentence_prop_ids, **or**
-      – its grounded_sentence does not mention every prop_k token.
+      – its grounded_sentence does not mention every prop_k token, **or**
+      – its LTL formula exceeds 80 tokens.
     """
     dataset, label_pool = [], [f"prop_{i + 1}" for i in range(max_props)]
+    token_limit_rejected_count = 0  # 因token数量超限被拒绝的计数
 
     # keep generating until we have enough *valid* examples
     while len(dataset) < num_entries:
@@ -1130,9 +1146,20 @@ def build_dataset_entries(
         tmp_idx = len(dataset)  # provisional id
         entry = build_entry_for_props(tmp_idx, props, actions_cfg)
 
+        # 检查LTL公式token数量
+        ltl_token_count = count_ltl_tokens(entry["tl"])
+        if ltl_token_count > MAX_LTL_TOKENS:
+            # 超过80个token，重新生成
+            token_limit_rejected_count += 1
+            continue
+
         if _entry_is_valid(entry):
             dataset.append(entry)  # keep it
         # else: drop silently and try again
+
+    # 打印token限制统计信息
+    if token_limit_rejected_count > 0:
+        print(f"[LTL-gen] Token限制: 超过80个token被拒绝 {token_limit_rejected_count} 条")
 
     # make sure the ids are sequential 0…N‑1 (they are, but keep it explicit)
     for new_id, entry in enumerate(dataset):

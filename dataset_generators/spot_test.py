@@ -1,16 +1,21 @@
 import spot
 
 # 解析公式
-f  = spot.formula(
-    'G(p0 -> F p1) && '        # 如果 p0 发生，最终 p1 会发生
-    'F(p2 && X p3) && '        # 最终 p2 发生，并且下一步 p3 发生
-    'G(p4 -> (!p5 U p6)) && '  # 全局 p4 -> p5 不发生直到 p6 发生
-    'F(p7 || p8) && '           # 最终 p7 或 p8 发生
-    '!p9 U p0'                  # p9 不发生直到 p0 发生
+f = spot.formula(
+    "G(p0 -> F p1) && "  # 如果 p0 发生，最终 p1 会发生
+    "F(p2 && X p3) && "  # 最终 p2 发生，并且下一步 p3 发生
+    "G(p4 -> (!p5 U p6)) && "  # 全局 p4 -> p5 不发生直到 p6 发生
+    "F(p7 || p8) && "  # 最终 p7 或 p8 发生
+    "!p9 U p0"  # p9 不发生直到 p0 发生
 )
-f  = spot.formula("finally globally ( finally not prop_3 or finally not prop_4 ) 並且 finally globally ( finally prop_1 and finally prop_7 ) 和 finally not prop_8 或 finally not prop_2 或 finally not prop_6 同时 （ finally prop_5 and ( not prop_2 or not prop_6 ) ）")
-
-
+f  = spot.formula(
+    '<> (p5_1_1_1 && X (p5_1_1_1 U p5_3_1_3)) && ' \
+            '<> (p7_3_1_3 && <> p0_3_1_3) && !p7_3_1_3 U p5_3_1_3 && ' \
+                '<> p3_1_1_1 && <> p4_1_1_1 && <> (p7_1_1_1 &&  <> p0_1_1_1) && ' \
+                    '!p3_1_1_1 U p5_1_1_1 && !p3_1_1_1 U p5_3_1_3 && ' \
+                        '!p4_1_1_1 U p5_1_1_1 && !p4_1_1_1 U p5_3_1_3 && ' \
+                            '!p7_1_1_1 U p3_1_1_1 && !p7_1_1_1 U p4_1_1_1'               
+)
 # 1. 化简公式
 # simplified_f = spot.simplify(f)
 # print(f"化简后: {simplified_f}")
