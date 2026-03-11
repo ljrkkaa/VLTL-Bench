@@ -81,7 +81,7 @@ def calculate_exact_match_accuracy(pred_file):
 
 if __name__ == "__main__":
     # pred_file = "predictions/lora_model/warehouse_nl_alpaca_pred.jsonl"
-    pred_file = "/data/ljr/llm_experiments/ljr_ltl_datasetV1/predictions/nl2tl_alpca_pred.jsonl"
+    pred_file = "/data/ljr/llm_experiments/ljr_ltl_datasetV1/predictions/nl2tl_alpca_predV1.jsonl"
 
     accuracy, correct, total = calculate_exact_match_accuracy(pred_file)
 

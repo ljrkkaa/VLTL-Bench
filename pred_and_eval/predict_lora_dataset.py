@@ -17,10 +17,10 @@ from vllm import LLM, SamplingParams
 from vllm.lora.request import LoRARequest
 
 
-DEFAULT_LORA_PATH = "/data/ljr/llm_experiments/LLaMA-Factory/saves/qwen_sft_lora_lifted/Qwen3-1.7B_r16_a32_lr5e-5"
+DEFAULT_LORA_PATH = "/data/ljr/llm_experiments/LLaMA-Factory/saves/qwen_datasetV1/Qwen3-1.7B_r8_a16_lr5e-5"
 DEFAULT_INPUT_FILE = "/data/ljr/llm_experiments/ljr_ltl_datasetV1/sft/nl2tl_alpca.jsonl"
 DEFAULT_OUTPUT_DIR = "/data/ljr/llm_experiments/ljr_ltl_datasetV1/predictions"
-DEFAULT_OUTPUT_FILE = "nl2tl_alpca_pred.jsonl"
+DEFAULT_OUTPUT_FILE = "nl2tl_alpca_predV1.jsonl"
 THINKING_TOKEN_ID = 151668  # Qwen3 thinking token
 
 
@@ -126,11 +126,11 @@ def process_file(
         # The Alpaca format has 'input' field containing the natural language specification
         # to translate into LTL. The 'instruction' field contains the task description.
         input_text = sample.get("input", "")
-        
+
         # If input is empty, fall back to using the instruction field
         if not input_text:
             input_text = sample.get("instruction", "")
-        
+
         # Build prompt using just the input text (the instruction is added separately)
         prompts.append(
             build_prompt(tokenizer, instruction, input_text, enable_thinking)
